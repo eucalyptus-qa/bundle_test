@@ -43,6 +43,7 @@ my $repeat = 1;
 my $cred_included = 0;
 
 my $exit_on_fail = "YES";
+my $ignore_exit_code = "NO";
 
 my $repeat_prerun = "NO";
 my $euca_version = "1.6";
@@ -123,6 +124,8 @@ foreach $line ( @lines ){
 			$repeat_prerun = $1;
 		}elsif( $line =~ /^EXIT_ON_FAIL\s+(.+)/ ){
 			$exit_on_fail = $1;
+		}elsif( $line =~ /^IGNORE_EXIT_CODE\s+(.+)/ ){
+			$ignore_exit_code = $1;
 		};
 	};
 };
@@ -144,6 +147,80 @@ if( @ARGV > 0 ){
 
 print get_time() . "\t[TEST_REPORT]\tTEST Stage : Running the Test $test_name\n";
 sleep(1);
+
+
+############### RE_USED STAGES HANDLING #########################
+
+for( my $si = 1; $si <= $total_stages; $si++ ){
+
+	my $s = $stg[$si];
+
+	my $check = $s->{'RUN'};
+	my $check_argv = "";
+
+	if( $check =~ /^TEST\s(.+)/ ){
+		$check = $1;
+		if( $check =~ /(.+?)\s(.+)/ ){
+			$check = $1;
+			$check_argv = $2;
+		};
+
+		my $this_case = 0;
+
+		for( my $ssi = $si+1; $ssi <= $total_stages; $ssi++ ){
+			my $ss = $stg[$ssi];
+			my $check_ss = $ss->{'RUN'};
+			my $check_argv_ss = "";
+			if( $check_ss =~ /^TEST\s(.+)/ ){
+                		$check_ss = $1;
+                		if( $check_ss =~ /(.+?)\s(.+)/ ){
+                        		$check_ss = $1;
+					$check_argv_ss = $2;
+                		};
+				if( $check eq $check_ss ){
+
+					my $this_case_str = sprintf("%03d", $this_case);
+
+					if( $this_case == 0 ){
+						my $stage_id = sprintf("%03d", $si);
+						my $c_dir = $check  . "_No_" . $this_case_str;
+                                                system("cp -r ../$check ../$c_dir");
+						my_sed("TEST_NAME\t$check", "TEST_NAME\t$c_dir", "../$c_dir/" .$check. ".conf");
+						system("mv ../$c_dir/" .$check. ".conf ../$c_dir/" .$c_dir. ".conf");
+						if( $check_argv ne "" ){
+							$s->{'RUN'} = "TEST $c_dir $check_argv";
+						}else{
+							$s->{'RUN'} = "TEST $c_dir";
+						};
+
+						$this_case = $this_case +1;
+						$this_case_str = sprintf("%03d", $this_case);
+
+                                        };
+
+					my $stage_id2 = sprintf("%03d", $ssi);
+					my $cc_dir = $check . "_No_" . $this_case_str;
+					if( !(-e "$cc_dir") ){
+						system("cp -r ../$check ../$cc_dir");
+						my_sed("TEST_NAME\t$check", "TEST_NAME\t$cc_dir", "../$cc_dir/" .$check. ".conf");
+						system("mv ../$cc_dir/" .$check. ".conf ../$cc_dir/" .$cc_dir. ".conf");
+						if( $check_argv_ss ne "" ){
+							$ss->{'RUN'} = "TEST $cc_dir $check_argv_ss";
+						}else{
+							$ss->{'RUN'} = "TEST $cc_dir";
+						};
+						$this_case = $this_case + 1;
+					};
+				};
+			};
+		};
+		my $sss = $stg[$si];
+		print $sss->{'RUN'} . "\n";
+	};
+
+
+};
+
 
 ############### Execution of Stages  #############################
 
@@ -167,9 +244,8 @@ my $included_env = "source $ENV{'PWD'}/etc/default.env; ";
 
 # get the credentials for the testee system   ... prob... not bash
 if( $cred_included eq "YES" ){
-	$included_env .= "source $ENV{'PWD'}/credentials/eucarc; ";
-}else{
-	# not sure ....dynamically load it ??
+#	$included_env .= "source $ENV{'PWD'}/credentials/eucarc; ";
+	$included_env .= "if [ -f $ENV{'PWD'}/credentials/eucarc ]; then source ../credentials/eucarc; fi; ";
 };
 
 # process ENV file
@@ -178,6 +254,17 @@ if( $env_file ne "" ){
 };
 
 my $bash_setup = "bash -c \"" . $included_env;
+
+
+###	ANDY'S PATCH	ADDED 010412
+if( -e "../shared/python" ){
+	# Make python module sharing work
+	my @pypaths = split(":", $ENV{'PYTHONPATH'});
+	my $sharedpypath = `readlink -f "../shared/python"`;
+	chomp($sharedpypath);
+	push(@pypaths, $sharedpypath);
+	$ENV{'PYTHONPATH'} = join(":", @pypaths);
+};
 
 #### STAGE INDEX AND POINTERS SETUP ############################
 
@@ -268,7 +355,7 @@ print "-------------------------------------------------------------------------
 print "POSTRUN\n";
 print "-------------------------------------------------------------------------------\n";
 
-if( process_stages("./prepost/", $ptr_postrun, $stage_postrun, $repeat-1 ) ){
+if( process_stages("./postrun/", $ptr_postrun, $stage_postrun, $repeat-1 ) ){
 	handle_fallback($ptr_fallback, $stage_fallback, $repeat-1 );
 	if( $exit_on_fail eq "YES" ){
 		exit(1);
@@ -316,7 +403,7 @@ sub process_stages{
 
 				chdir("./lib");
 				my $cmd = construct_cmd( "./" . find_lib_script($check) );
-				timed_run($cmd, 0 );
+				timed_run($cmd, 1800 );
 				chdir("$ENV{'PWD'}");
 			}else{
 				print "\n" . get_time() . "\t";
@@ -331,11 +418,11 @@ sub process_stages{
 				};
 
 				my $cmd = construct_cmd("$check");
-				timed_run($cmd, 0 );
+				timed_run($cmd, 1800 );
 				chdir("$ENV{'PWD'}");
 			};
 			
-			process_output( $check,  "pre_cond",  $this_stage, $this_trial, $display_option );
+			process_output( $check,  "pre_cond",  $this_stage, $this_trial, $display_option, 0 );
 	
 			if( check_exit_code($check, "pre_cond", $this_stage, $this_trial) ){
 				return 1;
@@ -371,7 +458,7 @@ sub process_stages{
 			my $cmd = construct_cmd("./run_test.pl ". $check . ".conf " . $this_argv );
 			$is_timed_out = timed_run($cmd, $s->{'TIMEOUT'} );
 			chdir("$ENV{'PWD'}");
-			process_output( $check,  "run",  $this_stage, $this_trial, $display_option );
+			process_output( $check,  "run",  $this_stage, $this_trial, $display_option, $is_timed_out );
 		}else{
 			if( $check =~ /^_/ ){
 				print "\n" . get_time() . "\t";
@@ -397,7 +484,7 @@ sub process_stages{
 				$is_timed_out = timed_run($cmd, $s->{'TIMEOUT'} );
 				chdir("$ENV{'PWD'}");
 			};
-			process_output( $check,  "run",  $this_stage, $this_trial, $display_option );
+			process_output( $check,  "run",  $this_stage, $this_trial, $display_option, $is_timed_out );
 		};
 
 		if( check_exit_code($check, "main_run", $this_stage, $this_trial) ){
@@ -405,8 +492,11 @@ sub process_stages{
 		};
 
 		if( $is_timed_out ){
+			print "\n";
 			print "\n" . get_time() . "\t[TEST_REPORT]\tFAILED ::";
-			print "\tCommand $check TIMED OUT !! at Trial $this_trial Stage $this_stage \n";
+			print " Command $check TIMED OUT !! at Trial $this_trial Stage $this_stage \n";
+			print "\n";
+			print "\n";
 			return 1;
 		};
 
@@ -427,7 +517,7 @@ sub process_stages{
 
 				chdir("./lib");
 				my $cmd = construct_cmd( "./" . find_lib_script($check) );
-				timed_run($cmd, 0 );
+				timed_run($cmd, 1800 );
 				chdir("$ENV{'PWD'}");
                         }else{
                                 print "\n" . get_time() . "\t";
@@ -442,11 +532,11 @@ sub process_stages{
                                 };
 
 				my $cmd = construct_cmd("$check");
-				timed_run($cmd, 0 );
+				timed_run($cmd, 1800 );
 				chdir("$ENV{'PWD'}");
 			};
 
-			process_output( $check,  "post_cond",  $this_stage, $this_trial, $display_option );
+			process_output( $check,  "post_cond",  $this_stage, $this_trial, $display_option, 0 );
 
 			if( check_exit_code($check, "post_cond", $this_stage, $this_trial) ){
 				return 1;
@@ -498,10 +588,19 @@ sub find_lib_script{
 
 
 sub process_output{
-	my ($script, $this_cond, $this_stage, $this_trial, $this_option ) = @_;
+	my ($script, $this_cond, $this_stage, $this_trial, $this_option, $is_timed_out ) = @_;
 
 	print "\n";
 	if( $this_option == 1 || $this_option == 3 ){
+
+		if( $is_timed_out ){
+			print "\n";
+			print "\n" . get_time() . "\t[TEST_REPORT]\tFAILED ::";
+                        print " Script $script TIMED OUT !! at Trial $this_trial Stage $this_stage \n";
+			print "\n";
+			print "\n";
+		};
+
 		if( was_outstr() ){
                         print "<<<<<<<<<<<<<<<<<<<<<<  STDOUT  >>>>>>>>>>>>>>>>>>>>>>>>>\n\n" . get_recent_outstr() . "\n";
 			print "<<<<<<<<<<<<<<<<<<<  END of STDOUT  >>>>>>>>>>>>>>>>>>>>>\n";
@@ -515,9 +614,9 @@ sub process_output{
 
 	if( $this_option == 2 || $this_option == 3 ){
 
-		if( length( $script ) > 30 ){
-			$script = substr($script, 0, 29);
-		};
+	#	if( length( $script ) > 200 ){
+	#		$script = substr($script, 0, 199);
+	#	};
 
 		if( $script =~ /^\.\// ){
 			$script =~ s/\.\///;
@@ -527,8 +626,22 @@ sub process_output{
 		$script =~ s/\s+/_/g;
 		$script =~ s/\./_dot_/g;
 
-		my $out_filename = "$ENV{'PWD'}/artifacts/trial-" . sprintf("%03d", $this_trial) . 
-				"-stage-" . sprintf("%02d", $this_stage) .
+		###	ADDED TO CHOP OFF LONG SCRIPT NAME	081512
+		if( length($script) > 200 ){
+			$script = substr($script, 0, 200);
+		};
+
+		###	ADDED TO KEEP OUTPUT IN ORDER		081512
+		if( $this_cond eq "pre_cond" ){
+			$this_cond = "0-" . $this_cond;
+		}elsif( $this_cond eq "post_cond" ){
+			$this_cond = "2-" . $this_cond;
+		}elsif( $this_cond eq "run" ){
+			$this_cond = "1-" . $this_cond;
+		};
+
+		my $out_filename = "$ENV{'PWD'}/artifacts/trial-" . sprintf("%04d", $this_trial) . 
+				"-stage-" . sprintf("%03d", $this_stage) .
 				"-task-" . $this_cond . 
 				"-script-" . $script . ".out";
 	#	my $err_filename = "$ENV{'PWD'}/artifacts/trial-" . sprintf("%03d", $this_trial) .
@@ -537,6 +650,15 @@ sub process_output{
 	
 		open( OUT, "> $out_filename" ) or die "Error : $!\t$out_filename doesn't exist\n";
 	#	open( ERR, "> $err_filename" ) or die $!;
+
+		if( $is_timed_out ){
+			print OUT "\n";
+			print OUT "\n" . get_time() . "\t[TEST_REPORT]\tFAILED ::";
+                        print OUT " Script $script TIMED OUT !! at Trial $this_trial Stage $this_stage \n";
+			print OUT "\n";
+			print OUT "\n";
+		};
+
 		if( was_outstr() ){
 			print OUT "<<<<<<<<<<<<<<<<<<<<<<  STDOUT  >>>>>>>>>>>>>>>>>>>>>>>>>\n\n" . get_recent_outstr() . "\n";
 			print OUT "<<<<<<<<<<<<<<<<<<<  END of STDOUT  >>>>>>>>>>>>>>>>>>>>>\n";
@@ -563,10 +685,14 @@ sub process_output{
 sub check_exit_code{
 	my( $check, $which_run, $this_stage, $this_trial ) = @_;
 	my $rc = $? >> 8;
+
 	if( $rc == 1 ){
 		print get_time() . "\t[TEST_REPORT]\tTEST Stage : TEST $test_name SCRIPT ($which_run) $check has FAILED at TRIAL $this_trial STAGE $this_stage\n";
 		sleep(1);
-		return(1);
+		if( $ignore_exit_code eq "YES" ){
+			return 0;
+		};
+		return 1;
 	};
 	return 0;
 };
@@ -597,4 +723,26 @@ sub get_time{
         my $string = sprintf "[%4d-%02d-%02d %02d:%02d:%02d]", $year+1900,$mon+1,$mday,$hour,$min,$sec;
         return $string;
 };
+
+
+
+# To make 'sed' command human-readable
+# my_sed( target_text, new_text, filename);
+#   --->
+#        sed --in-place 's/ <target_text> / <new_text> /' <filename>
+sub my_sed{
+
+        my ($from, $to, $file) = @_;
+
+        $from =~ s/([\'\"\/])/\\$1/g;
+        $to =~ s/([\'\"\/])/\\$1/g;
+
+        my $cmd = "sed --in-place 's/" . $from . "/" . $to . "/' " . $file;
+
+        system("$cmd");
+
+        return 0;
+};
+
+1;
 
